@@ -2,6 +2,11 @@
 name = "synsert"
 version = "0.1.0"
 edition = "2021"
+description = "A primitive for writing structural search and replace programs for rust"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aatifsyed/synsert"
+homepage = "https://crates.io/crates/synsert"
+documentation = "https://docs.rs/synsert"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
