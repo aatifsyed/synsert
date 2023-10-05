@@ -1,8 +1,8 @@
-use std::{cmp::Reverse, ops::RangeInclusive};
+use std::{cmp::Reverse, fmt, ops::RangeInclusive};
 
-use miette::{SourceCode, SourceOffset, SourceSpan};
 use proc_macro2::{LineColumn, Span};
 use rangemap::RangeInclusiveMap;
+use ropey::{Rope, RopeSlice};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Operation {
@@ -12,116 +12,113 @@ pub enum Operation {
     Remove,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-pub struct Synsert<'a> {
-    source_code: &'a str,
+/// Keeps track of edits so you can apply them later.
+pub struct Synsert {
+    source_code: Rope,
+    /// Detect edit collisions.
+    ///
+    /// char-indexed.
     edits: RangeInclusiveMap<usize, Operation>,
 }
 
-impl<'a> Synsert<'a> {
-    pub fn new(source_code: &'a str) -> Self {
+impl Synsert {
+    pub fn new(source_code: &str) -> Self {
         Self {
-            source_code,
+            source_code: Rope::from_str(source_code),
             edits: RangeInclusiveMap::new(),
         }
     }
     /// # Panics
-    /// - if `span` doesn't correspond to the `source_code` that this was created with.
-    /// - if there is already an edit that overlaps with this `span`
+    /// - if `span` contains an out-of-bounds line or column for `source_code`.
+    /// - if there is already an edit that overlaps with this `span`.
     pub fn queue_edit_at(&mut self, span: Span, operation: Operation) {
-        // proc-macro2 columns: 0-indexed, UTF-8-chars
-        //      miette columns: 1-indexed, byte offset
-        //   proc-macro2 lines: 1-indexed
-        //        miette lines: 1-indexed
-        let start = span.start();
-        let start = SourceOffset::from_location(
-            self.source_code,
-            start.line,
-            self.column_byte_offset(start),
+        // proc-macro2::Span's line's are 1-indexed
+        // ropey::Rope's lines are 0-indexed
+
+        let num_lines = self.source_code.len_lines();
+        assert!(
+            num_lines >= span.end().line,
+            "span exceeds end of file. span is {} but there are {} lines",
+            FmtSpan(span),
+            num_lines
         );
+
+        let start = span.start();
+        self.assert_column(start, span);
+        let start = self.source_code.line_to_char(start.line - 1) + start.column;
+
         let end = span.end();
-        let end =
-            SourceOffset::from_location(self.source_code, end.line, self.column_byte_offset(end));
-        let len = SourceOffset::from(end.offset() - start.offset());
-        let miette_span = SourceSpan::new(start, len);
-        let actual = std::str::from_utf8(
-            self.source_code
-                .read_span(&miette_span, 0, 0)
-                .unwrap()
-                .data(),
-        )
-        .unwrap();
-        let expected = span.source_text().unwrap();
-        assert_eq!(expected, actual);
-        let start = start.offset();
-        let end = end.offset();
-        if self.edits.overlaps(&(start..=end)) {
-            panic!("duplicate edit for range")
-        }
+        self.assert_column(end, span);
+        let end = self.source_code.line_to_char(end.line - 1) + end.column - 1; // to inclusive
+
+        assert!(
+            !self.edits.overlaps(&(start..=end)),
+            "an edit has already been made in the range {}",
+            FmtSpan(span)
+        );
+
         self.edits.insert(start..=end, operation)
     }
 
-    fn column_byte_offset(&self, position: LineColumn) -> usize {
-        let (column, _char) = self
-            .source_code
-            .lines()
-            .nth(position.line - 1)
-            .unwrap()
-            .char_indices()
-            .nth(position.column + 1)
-            .unwrap();
-        column
+    fn assert_column(&self, coord: LineColumn, span: Span) {
+        let num_cols = self.source_code.line(coord.line - 1).len_chars();
+        assert!(
+            num_cols > coord.column,
+            "span exceeds end of line. span is {} but there are {} columns",
+            FmtSpan(span),
+            num_cols
+        );
     }
 
-    /// Sorted, later spans first, non-overlapping.
-    /// Spans are in UTF-8 chars.
-    pub fn edits(self) -> Vec<(RangeInclusive<usize>, Operation)> {
-        let mut v = self.edits.into_iter().collect::<Vec<_>>();
-        v.sort_by_key(|(range, _op)| Reverse(*range.start()));
-        v
-    }
-
-    pub fn applied(self) -> String {
-        let mut edited = String::from(self.source_code);
-        for (span, operation) in self.edits() {
-            edited = do_edit(edited, span, operation)
+    /// It is a logic error to apply edits in an arbitrary order - early edits may interfere with later edits.
+    ///
+    /// # Panics
+    /// - if `range` is out-of-bounds. This is true for any edit retained by this struct.
+    pub fn apply(&mut self, range: &RangeInclusive<usize>, operation: &Operation) {
+        match operation {
+            Operation::Prepend(it) => self.source_code.insert(*range.start(), it),
+            Operation::Append(it) => self.source_code.insert(range.end() + 1, it),
+            Operation::Replace(it) => {
+                self.source_code.remove(range.clone());
+                self.source_code.insert(*range.start(), it)
+            }
+            Operation::Remove => self.source_code.remove(range.clone()),
         }
-        edited
+    }
+    /// Get the current, possibly edited state of the source code.
+    pub fn source_code(&self) -> RopeSlice {
+        self.source_code.slice(..)
+    }
+    /// Latest edit in the file first.
+    pub fn edits_ordered(&self) -> Vec<(RangeInclusive<usize>, Operation)> {
+        let mut edits = self.edits.clone().into_iter().collect::<Vec<_>>();
+        edits.sort_by_key(|(range, _op)| Reverse(*range.start()));
+        edits
+    }
+    /// Apply all the edits, returning the result.
+    pub fn apply_all(mut self) -> String {
+        for (range, operation) in self.edits_ordered() {
+            self.apply(&range, &operation)
+        }
+        self.source_code.into()
     }
 }
 
-pub fn do_edit(
-    mut source_code: String,
-    span: RangeInclusive<usize>,
-    operation: Operation,
-) -> String {
-    let (beginning_and_middle, end) = source_code.split_at(*span.end());
-    let (beginning, middle) = beginning_and_middle.split_at(*span.start());
+struct FmtSpan(Span);
 
-    let end = end.to_owned();
-    let middle = middle.to_owned();
-    source_code.truncate(beginning.len());
-    let mut beginning = source_code;
-
-    match operation {
-        Operation::Append(it) => {
-            beginning.push_str(&middle);
-            beginning.push_str(&it);
-        }
-        Operation::Prepend(it) => {
-            beginning.push_str(&it);
-            beginning.push_str(&middle);
-        }
-        Operation::Replace(it) => beginning.push_str(&it),
-        Operation::Remove => {}
+impl fmt::Display for FmtSpan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let start = self.0.start();
+        let end = self.0.end();
+        f.write_fmt(format_args!(
+            "{}:{}..{}:{}",
+            start.line, start.column, end.line, end.column
+        ))
     }
-    beginning.push_str(&end);
-    beginning
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
 
     use super::*;
     use pretty_assertions::assert_str_eq;
@@ -145,68 +142,19 @@ mod tests {
 
         let mut synsert = Synsert::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Replace(String::from("BAR")));
-        assert_str_eq!(synsert.applied(), "const BAR: () = ();");
+        assert_str_eq!(synsert.apply_all(), "const BAR: () = ();");
 
         let mut synsert = Synsert::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Prepend(String::from("TO")));
-        assert_str_eq!(synsert.applied(), "const TOFOO: () = ();");
+        assert_str_eq!(synsert.apply_all(), "const TOFOO: () = ();");
 
         let mut synsert = Synsert::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Append(String::from("BAR")));
-        assert_str_eq!(synsert.applied(), "const FOOBAR: () = ();");
+        assert_str_eq!(synsert.apply_all(), "const FOOBAR: () = ();");
 
         let mut synsert = Synsert::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Remove);
-        assert_str_eq!(synsert.applied(), "const : () = ();");
-    }
-
-    #[test]
-    fn debug_str() {
-        let source_code = "const 𓀕: () = ();";
-        let ix2char = source_code.char_indices().collect::<HashMap<_, _>>();
-        let mut ix_char = 0;
-        for (ix, byte) in source_code.bytes().enumerate() {
-            match ix2char.get(&ix) {
-                Some(char) => {
-                    println!("{ix:>2} │ {byte:<3} │ {char} │ {ix_char:<2}");
-                    ix_char += 1
-                }
-                None => println!("{ix:>2} │ {byte:<3} ┊   ┊"),
-            }
-        }
-
-        let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
-        let syn::ItemConst {
-            attrs: _,
-            vis,
-            const_token,
-            ident,
-            generics,
-            colon_token,
-            ty,
-            eq_token,
-            expr,
-            semi_token,
-        } = &ast;
-
-        macro_rules! print_spanned {
-            ($($ident:ident)*) => {
-                $(
-                    let span = $ident.span();
-                    let start = span.start();
-                    let end = span.end();
-                    println!(
-                        "{}..{} {}",
-                        start.column, end.column, stringify!($ident)
-                    );
-                )*
-            };
-        }
-
-        println!();
-        print_spanned!(
-            vis const_token ident generics colon_token ty eq_token expr semi_token
-        );
+        assert_str_eq!(synsert.apply_all(), "const : () = ();");
     }
 
     #[test]
@@ -215,18 +163,18 @@ mod tests {
         let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
         let mut synsert = Synsert::new(source_code);
         synsert.queue_edit_at(ast.expr.span(), Operation::Replace(String::from("𓀠")));
-        assert_str_eq!(synsert.applied(), "const 𓀕: () = 𓀠;");
+        assert_str_eq!(synsert.apply_all(), "const 𓀕: () = 𓀠;");
 
-        // let mut synsert = Synsert::new(source_code);
-        // synsert.queue_edit_at(ast.ident.span(), Operation::Prepend(String::from("𓀠")));
-        // assert_str_eq!(synsert.applied(), "const 𓀠𓀕: () = ();");
+        let mut synsert = Synsert::new(source_code);
+        synsert.queue_edit_at(ast.ident.span(), Operation::Prepend(String::from("𓀠")));
+        assert_str_eq!(synsert.apply_all(), "const 𓀠𓀕: () = ();");
 
-        // let mut synsert = Synsert::new(source_code);
-        // synsert.queue_edit_at(ast.ident.span(), Operation::Append(String::from("𓀠")));
-        // assert_str_eq!(synsert.applied(), "const 𓀕𓀠: () = ();");
+        let mut synsert = Synsert::new(source_code);
+        synsert.queue_edit_at(ast.ident.span(), Operation::Append(String::from("𓀠")));
+        assert_str_eq!(synsert.apply_all(), "const 𓀕𓀠: () = ();");
 
-        // let mut synsert = Synsert::new(source_code);
-        // synsert.queue_edit_at(ast.ty.span(), Operation::Remove);
-        // assert_str_eq!(synsert.applied(), "const 𓀕:  = ();");
+        let mut synsert = Synsert::new(source_code);
+        synsert.queue_edit_at(ast.ty.span(), Operation::Remove);
+        assert_str_eq!(synsert.apply_all(), "const 𓀕:  = ();");
     }
 }
