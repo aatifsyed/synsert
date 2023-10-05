@@ -2,7 +2,7 @@ use std::{cmp::Reverse, fmt, ops::RangeInclusive};
 
 use proc_macro2::{LineColumn, Span};
 use rangemap::RangeInclusiveMap;
-use ropey::{Rope, RopeSlice};
+use ropey::Rope;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Operation {
@@ -12,7 +12,7 @@ pub enum Operation {
     Remove,
 }
 
-/// Keeps track of edits so you can apply them later.
+/// Keeps track of edits so you can apply them correctly all-at-once
 pub struct Synsert {
     source_code: Rope,
     /// Detect edit collisions.
@@ -69,7 +69,6 @@ impl Synsert {
 
         self.edits.insert(start..=end, operation)
     }
-
     fn assert_column(&self, coord: LineColumn, span: Span) {
         let num_cols = self.source_code.line(coord.line - 1).len_chars();
         assert!(
@@ -79,36 +78,13 @@ impl Synsert {
             num_cols
         );
     }
-
-    /// It is a logic error to apply edits in an arbitrary order - early edits may interfere with later edits.
-    ///
-    /// # Panics
-    /// - if `range` is out-of-bounds. This is true for any edit retained by this struct.
-    pub fn apply(&mut self, range: &RangeInclusive<usize>, operation: &Operation) {
-        match operation {
-            Operation::Prepend(it) => self.source_code.insert(*range.start(), it),
-            Operation::Append(it) => self.source_code.insert(range.end() + 1, it),
-            Operation::Replace(it) => {
-                self.source_code.remove(range.clone());
-                self.source_code.insert(*range.start(), it)
-            }
-            Operation::Remove => self.source_code.remove(range.clone()),
-        }
-    }
-    /// Get the current, possibly edited state of the source code.
-    pub fn source_code(&self) -> RopeSlice {
-        self.source_code.slice(..)
-    }
-    /// Latest edit in the file first.
-    pub fn edits_ordered(&self) -> Vec<(RangeInclusive<usize>, Operation)> {
-        let mut edits = self.edits.clone().into_iter().collect::<Vec<_>>();
-        edits.sort_by_key(|(range, _op)| Reverse(*range.start()));
-        edits
-    }
     /// Apply all the edits, returning the result.
     pub fn apply_all(mut self) -> String {
-        for (range, operation) in self.edits_ordered() {
-            self.apply(&range, &operation)
+        let mut edits = self.edits.iter().collect::<Vec<_>>();
+        edits.sort_by_key(|(range, _op)| Reverse(*range.start()));
+
+        for (range, operation) in edits {
+            apply(&mut self.source_code, range, operation)
         }
         self.source_code.into()
     }
@@ -127,6 +103,25 @@ impl Synsert {
     /// Convenience method for [`Self::queue_edit_at`] with [`Operation::Remove`].
     pub fn remove(&mut self, span: Span) {
         self.queue_edit_at(span, Operation::Remove)
+    }
+    /// Get a reference to the edits that [`Self::apply_all`] will apply,
+    /// by character index into the file.
+    ///
+    /// This is useful to see if, for example, there are any at all.
+    pub fn edits(&self) -> &RangeInclusiveMap<usize, Operation> {
+        &self.edits
+    }
+}
+
+fn apply(rope: &mut Rope, range: &RangeInclusive<usize>, operation: &Operation) {
+    match operation {
+        Operation::Prepend(it) => rope.insert(*range.start(), it),
+        Operation::Append(it) => rope.insert(range.end() + 1, it),
+        Operation::Replace(it) => {
+            rope.remove(range.clone());
+            rope.insert(*range.start(), it)
+        }
+        Operation::Remove => rope.remove(range.clone()),
     }
 }
 
