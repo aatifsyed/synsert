@@ -1,4 +1,4 @@
-//! A primitive for programatically editing files using [`syn`](https://docs.rs/syn).
+//! A primitive for programatically editing files using [`syn`].
 //!
 //! `syn` is the de-facto standard for parsing Rust. Its syntax tree is easy to
 //! use, but it is lossy - if you parse a file, edit it with syn, and unparse
@@ -23,6 +23,8 @@
 //!
 //! assert_eq!(edited, "const NUM_YAKS: usize = 9001;");
 //! ```
+//!
+//! See the examples for a more in-depth case using a [`syn::visit::Visit`](https://docs.rs/syn/latest/syn/visit/index.html)or
 
 use std::{cmp::Reverse, fmt, ops::RangeInclusive};
 
@@ -222,6 +224,19 @@ mod tests {
     use super::*;
     use indoc::indoc;
     use pretty_assertions::assert_str_eq;
+
+    #[test]
+    fn readme() {
+        assert!(
+            std::process::Command::new("cargo")
+                .args(["rdme", "--check"])
+                .output()
+                .expect("couldn't run `cargo rdme`")
+                .status
+                .success(),
+            "README.md is out of date - bless the new version by running `cargo rdme`"
+        )
+    }
 
     #[test]
     fn proc_macro2_source_text_is_correct_for_single_byte() {

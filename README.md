@@ -1,6 +1,6 @@
 <!-- cargo-rdme start -->
 
-A primitive for programatically editing files using [`syn`](https://docs.rs/syn).
+A primitive for programatically editing files using [`syn`].
 
 `syn` is the de-facto standard for parsing Rust. Its syntax tree is easy to
 use, but it is lossy - if you parse a file, edit it with syn, and unparse
@@ -25,5 +25,7 @@ let edited = editor
 
 assert_eq!(edited, "const NUM_YAKS: usize = 9001;");
 ```
+
+See the examples for a more in-depth case using a [`syn::visit::Visit`](https://docs.rs/syn/latest/syn/visit/index.html)or
 
 <!-- cargo-rdme end -->
