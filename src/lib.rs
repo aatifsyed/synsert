@@ -7,21 +7,19 @@
 //! [Rust Analyzer's syntax crate](https://docs.rs/ra_ap_syntax) has a lossless
 //! syntax tree, which powers IDE assists, but it's far more difficult to use.
 //!
-//! [`Synsert`] allows you to use `syn`'s syntax tree to write your Structured
+//! [`Editor`] allows you to use `syn`'s syntax tree to write your Structured
 //! Search and Replace tools, or IDE assists.
 //!
 //! ```
-//! # use syn::spanned::Spanned as _;
 //! let source_code = "const NUM: usize = 1;"; // get the source text
 //!
 //! // create an AST and a helper struct from the same source code
-//! let mut synsert = synsert::Editor::new(source_code);
-//! let parsed = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
+//! let (mut editor, ast) = synsert::Editor::new_with_ast::<syn::ItemConst>(source_code).unwrap();
 //!
-//! synsert.append(parsed.ident.span(), "_YAKS");
-//! synsert.replace(parsed.expr.span(), "9001");
-//!
-//! let edited = synsert.apply_all();
+//! let edited = editor
+//!     .append(ast.ident, "_YAKS")
+//!     .replace(ast.expr, "9001")
+//!     .finish();
 //!
 //! assert_eq!(edited, "const NUM_YAKS: usize = 9001;");
 //! ```
@@ -31,10 +29,12 @@ use std::{cmp::Reverse, fmt, ops::RangeInclusive};
 use proc_macro2::{LineColumn, Span};
 use rangemap::RangeInclusiveMap;
 use ropey::Rope;
+use syn::{parse::Parse, spanned::Spanned};
 
-/// Keeps track of edits so you can apply them correctly all-at-once.
+/// Keeps track of edits so you can apply them correctly all-at-once with [`finish`](Editor::finish)
 ///
 /// See [module documentation](mod@self) for more.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Editor {
     source_code: Rope,
     /// Detect edit collisions.
@@ -44,6 +44,10 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// Parse `source_code` into the given type, and create a new editor over that source code.
+    pub fn new_with_ast<T: Parse>(source_code: &str) -> syn::Result<(Self, T)> {
+        syn::parse_str::<T>(source_code).map(|ast| (Self::new(source_code), ast))
+    }
     /// Create a new editor.
     ///
     /// Syntax tree types used with this editor must be from the same source.
@@ -53,11 +57,66 @@ impl Editor {
             edits: RangeInclusiveMap::new(),
         }
     }
+    /// Replace `node` with `text`.
+    ///
+    /// ```
+    /// # use synsert::Editor;
+    /// let (mut editor, ast) = Editor::new_with_ast::<syn::TraitItemFn>("fn shave_yaks();").unwrap();
+    /// assert_eq!(editor.replace(ast.sig.ident, "write_code").finish(), "fn write_code();")
+    /// ```
+    ///
+    /// # Panics
+    /// - may panic if `node` is from a difference source text than this `Editor`.
+    /// - if there is a conflict (i.e this node, or a parent of it has already been edited).
+    pub fn replace(&mut self, node: impl Spanned, text: impl Into<String>) -> &mut Self {
+        self.queue_edit_at(node.span(), Operation::Replace(text.into()))
+    }
+    /// Put `text` before `node`.
+    ///
+    /// ```
+    /// # use synsert::Editor;
+    /// let (mut editor, ast) = Editor::new_with_ast::<syn::ExprCast>("ate as u8").unwrap();
+    /// assert_eq!(editor.prepend(ast.expr, "i_").finish(), "i_ate as u8")
+    /// ```
+    ///
+    /// # Panics
+    /// - may panic if `node` is from a difference source text than this `Editor`.
+    /// - if there is a conflict (i.e this node, or a parent of it has already been edited).
+    pub fn prepend(&mut self, node: impl Spanned, text: impl Into<String>) -> &mut Self {
+        self.queue_edit_at(node.span(), Operation::Prepend(text.into()))
+    }
+    /// Put `text` after `node`.
+    ///
+    /// ```
+    /// # use synsert::Editor;
+    /// let (mut editor, ast) = Editor::new_with_ast::<syn::Expr>("maybe").unwrap();
+    /// assert_eq!(editor.append(ast, "?").finish(), "maybe?")
+    /// ```
+    ///
+    /// # Panics
+    /// - may panic if `node` is from a difference source text than this `Editor`.
+    /// - if there is a conflict (i.e this node, or a parent of it has already been edited).
+    pub fn append(&mut self, node: impl Spanned, text: impl Into<String>) -> &mut Self {
+        self.queue_edit_at(node.span(), Operation::Append(text.into()))
+    }
+    /// Remove the text for `node`.
+    ///
+    /// ```
+    /// # use synsert::Editor;
+    /// let (mut editor, ast) = Editor::new_with_ast::<syn::ExprArray>("[going, going, gone]").unwrap();
+    /// assert_eq!(editor.remove(&ast.elems[2]).finish(), "[going, going, ]")
+    /// ```
+    ///
+    /// # Panics
+    /// - may panic if `node` is from a difference source text than this `Editor`.
+    /// - if there is a conflict (i.e this node, or a parent of it has already been edited).
+    pub fn remove(&mut self, node: impl Spanned) -> &mut Self {
+        self.queue_edit_at(node.span(), Operation::Remove)
+    }
     /// # Panics
     /// - if `span` contains an out-of-bounds line or column for `source_code`.
-    /// - if [`Span::source_text`] returns a different string to the one indexed into ours.
-    /// - if there is already an edit that overlaps with this `span`.
-    pub fn queue_edit_at(&mut self, span: Span, operation: Operation) {
+    /// - if there is already an edit with a `span` that overlaps with this one.
+    fn queue_edit_at(&mut self, span: Span, operation: Operation) -> &mut Self {
         // proc-macro2::Span's line's are 1-indexed
         // ropey::Rope's lines are 0-indexed
 
@@ -92,55 +151,40 @@ impl Editor {
             )
         }
 
-        self.edits.insert(start..=end, operation)
+        self.edits.insert(start..=end, operation);
+        self
     }
     fn assert_column(&self, coord: LineColumn, span: Span) {
         let num_cols = self.source_code.line(coord.line - 1).len_chars();
         assert!(
-            num_cols > coord.column,
+            num_cols >= coord.column,
             "span exceeds end of line. span is {} but there are {} columns",
             FmtSpan(span),
             num_cols
         );
     }
-    /// Apply all the edits, returning the result.
-    pub fn apply_all(mut self) -> String {
+    /// Apply all the edits, returning the final text.
+    pub fn finish(&self) -> String {
         let mut edits = self.edits.iter().collect::<Vec<_>>();
         edits.sort_by_key(|(range, _op)| Reverse(*range.start()));
 
+        let mut source_code = self.source_code.clone();
+
         for (range, operation) in edits {
-            apply(&mut self.source_code, range, operation)
+            apply(&mut source_code, range, operation)
         }
-        self.source_code.into()
+
+        source_code.into()
     }
-    /// Convenience method for [`Self::queue_edit_at`] with [`Operation::Replace`].
-    pub fn replace(&mut self, span: Span, new: impl Into<String>) {
-        self.queue_edit_at(span, Operation::Replace(new.into()))
-    }
-    /// Convenience method for [`Self::queue_edit_at`] with [`Operation::Prepend`].
-    pub fn prepend(&mut self, span: Span, new: impl Into<String>) {
-        self.queue_edit_at(span, Operation::Prepend(new.into()))
-    }
-    /// Convenience method for [`Self::queue_edit_at`] with [`Operation::Append`].
-    pub fn append(&mut self, span: Span, new: impl Into<String>) {
-        self.queue_edit_at(span, Operation::Append(new.into()))
-    }
-    /// Convenience method for [`Self::queue_edit_at`] with [`Operation::Remove`].
-    pub fn remove(&mut self, span: Span) {
-        self.queue_edit_at(span, Operation::Remove)
-    }
-    /// Get a reference to the edits that [`Self::apply_all`] will apply,
-    /// by character index into the file.
-    ///
-    /// This is useful to see if, for example, there are any at all.
-    pub fn edits(&self) -> &RangeInclusiveMap<usize, Operation> {
-        &self.edits
+    /// See if this editor has accumulated any edits.
+    pub fn is_empty(&self) -> bool {
+        self.edits.is_empty()
     }
 }
 
 /// An operation on the source text.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-pub enum Operation {
+enum Operation {
     Append(String),
     Prepend(String),
     Replace(String),
@@ -178,7 +222,6 @@ mod tests {
     use super::*;
     use indoc::indoc;
     use pretty_assertions::assert_str_eq;
-    use syn::spanned::Spanned as _;
 
     #[test]
     fn proc_macro2_source_text_is_correct_for_single_byte() {
@@ -204,19 +247,19 @@ mod tests {
 
         let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Replace(String::from("BAR")));
-        assert_str_eq!(synsert.apply_all(), "const BAR: () = ();");
+        assert_str_eq!(synsert.finish(), "const BAR: () = ();");
 
         let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Prepend(String::from("TO")));
-        assert_str_eq!(synsert.apply_all(), "const TOFOO: () = ();");
+        assert_str_eq!(synsert.finish(), "const TOFOO: () = ();");
 
         let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Append(String::from("BAR")));
-        assert_str_eq!(synsert.apply_all(), "const FOOBAR: () = ();");
+        assert_str_eq!(synsert.finish(), "const FOOBAR: () = ();");
 
         let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Remove);
-        assert_str_eq!(synsert.apply_all(), "const : () = ();");
+        assert_str_eq!(synsert.finish(), "const : () = ();");
     }
 
     #[test]
@@ -225,19 +268,19 @@ mod tests {
         let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
         let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.expr.span(), Operation::Replace(String::from("𓀠")));
-        assert_str_eq!(synsert.apply_all(), "const 𓀕: () = 𓀠;");
+        assert_str_eq!(synsert.finish(), "const 𓀕: () = 𓀠;");
 
         let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Prepend(String::from("𓀠")));
-        assert_str_eq!(synsert.apply_all(), "const 𓀠𓀕: () = ();");
+        assert_str_eq!(synsert.finish(), "const 𓀠𓀕: () = ();");
 
         let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Append(String::from("𓀠")));
-        assert_str_eq!(synsert.apply_all(), "const 𓀕𓀠: () = ();");
+        assert_str_eq!(synsert.finish(), "const 𓀕𓀠: () = ();");
 
         let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ty.span(), Operation::Remove);
-        assert_str_eq!(synsert.apply_all(), "const 𓀕:  = ();");
+        assert_str_eq!(synsert.finish(), "const 𓀕:  = ();");
     }
 
     #[test]
@@ -248,12 +291,12 @@ mod tests {
         let mut synsert = Editor::new(source_code);
         synsert.replace(ast.expr.span(), "make_bar()");
         synsert.replace(ast.ident.span(), "BAR");
-        assert_str_eq!(synsert.apply_all(), "const BAR: () = make_bar();");
+        assert_str_eq!(synsert.finish(), "const BAR: () = make_bar();");
 
         let mut synsert = Editor::new(source_code);
         synsert.prepend(ast.expr.span(), "make_foo_bar");
         synsert.append(ast.ident.span(), "_BAR");
-        assert_str_eq!(synsert.apply_all(), "const FOO_BAR: () = make_foo_bar();");
+        assert_str_eq!(synsert.finish(), "const FOO_BAR: () = make_foo_bar();");
     }
 
     #[test]
@@ -268,7 +311,7 @@ mod tests {
 
         let mut synsert = Editor::new(source_code);
         synsert.replace(ast.expr.span(), "make_foo()");
-        assert_str_eq!(synsert.apply_all(), "const FOO: () = make_foo();");
+        assert_str_eq!(synsert.finish(), "const FOO: () = make_foo();");
 
         let source_code = indoc! {"
             const FOOD: () = ();
@@ -283,7 +326,7 @@ mod tests {
         let mut synsert = Editor::new(source_code);
         synsert.replace(ast.items[1].span(), "const BAR: () = ();");
         assert_str_eq!(
-            synsert.apply_all(),
+            synsert.finish(),
             indoc! {"
                 const FOOD: () = ();
                 const BAR: () = ();

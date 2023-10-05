@@ -11,6 +11,10 @@ proc-macro2 = { version = "1.0.67", default-features = false, features = [
 ] }
 rangemap = "1.4.0"
 ropey = "1.6.0"
+syn = { version = "2.0.37", default-features = false, features = [
+    "printing",
+    "parsing",
+] }
 
 [dev-dependencies]
 clap = { version = "4.4.6", features = ["derive"] }
@@ -21,8 +25,6 @@ pretty_assertions = "1.4.0"
 similar = { version = "2.2.1", features = ["text", "inline", "bytes"] }
 syn = { version = "2.0.37", default-features = false, features = [
     "full",
-    "parsing",
-    "printing",
     "extra-traits",
     "visit",
 ] }

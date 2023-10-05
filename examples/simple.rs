@@ -32,10 +32,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             continue;
         };
         visitor.visit_file(&ast);
-        match visitor.editor.edits().is_empty() {
+        match visitor.editor.is_empty() {
             true => println!("no edits."),
             false => {
-                let after = visitor.editor.apply_all();
+                let after = visitor.editor.finish();
 
                 println!("edits to apply!");
                 print_diff(&before, &after);
@@ -70,12 +70,12 @@ impl<'ast> Visit<'ast> for Visitor {
                             init: Some(init), ..
                         }) => {
                             if let Expr::Try(ExprTry { question_token, .. }) = &*init.expr {
-                                self.editor.replace(question_token.span(), ".unwrap()")
+                                self.editor.replace(question_token.span(), ".unwrap()");
                             }
                         }
                         // top level expression
                         Stmt::Expr(Expr::Try(ExprTry { question_token, .. }), _) => {
-                            self.editor.replace(question_token.span(), ".unwrap()")
+                            self.editor.replace(question_token.span(), ".unwrap()");
                         }
                         _ => {}
                     }
