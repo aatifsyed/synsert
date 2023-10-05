@@ -30,6 +30,7 @@ impl Synsert {
     }
     /// # Panics
     /// - if `span` contains an out-of-bounds line or column for `source_code`.
+    /// - if [`Span::source_text`] returns a different string to the one indexed into ours.
     /// - if there is already an edit that overlaps with this `span`.
     pub fn queue_edit_at(&mut self, span: Span, operation: Operation) {
         // proc-macro2::Span's line's are 1-indexed
@@ -56,6 +57,15 @@ impl Synsert {
             "an edit has already been made in the range {}",
             FmtSpan(span)
         );
+
+        #[cfg(never)] // see bug below
+        if let Some(reported) = span.source_text() {
+            let internal = self.source_code.slice(start..=end);
+            assert_eq!(
+                internal, reported,
+                "the span's reported source text does not match our calculated source text"
+            )
+        }
 
         self.edits.insert(start..=end, operation)
     }
@@ -102,6 +112,22 @@ impl Synsert {
         }
         self.source_code.into()
     }
+    /// Convenience method for [`Self::queue_edit_at`] with [`Operation::Replace`].
+    pub fn replace(&mut self, span: Span, new: impl Into<String>) {
+        self.queue_edit_at(span, Operation::Replace(new.into()))
+    }
+    /// Convenience method for [`Self::queue_edit_at`] with [`Operation::Prepend`].
+    pub fn prepend(&mut self, span: Span, new: impl Into<String>) {
+        self.queue_edit_at(span, Operation::Prepend(new.into()))
+    }
+    /// Convenience method for [`Self::queue_edit_at`] with [`Operation::Append`].
+    pub fn append(&mut self, span: Span, new: impl Into<String>) {
+        self.queue_edit_at(span, Operation::Append(new.into()))
+    }
+    /// Convenience method for [`Self::queue_edit_at`] with [`Operation::Remove`].
+    pub fn remove(&mut self, span: Span) {
+        self.queue_edit_at(span, Operation::Remove)
+    }
 }
 
 struct FmtSpan(Span);
@@ -125,14 +151,20 @@ mod tests {
     use syn::spanned::Spanned as _;
 
     #[test]
-    fn proc_macro2_spans_are_correct() {
+    fn proc_macro2_source_text_is_correct_for_single_byte() {
         let source_code = "const FOO: () = ();";
         let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
-        assert_eq!(
-            "FOO",
-            ast.ident.span().source_text().unwrap(),
-            "ident from span doesn't match ident from source"
-        )
+        assert_eq!("FOO", ast.ident.span().source_text().unwrap())
+    }
+
+    /// https://github.com/dtolnay/proc-macro2/issues/408
+    #[test]
+    #[should_panic = "is not a char boundary"]
+    fn proc_macro2_source_text_is_incorrect_for_multibyte() {
+        let source_code = "const 𓀕: () = ();";
+        let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
+        let reported = ast.ident.span().source_text(); // boom
+        assert_eq!("𓀕", reported.unwrap())
     }
 
     #[test]
