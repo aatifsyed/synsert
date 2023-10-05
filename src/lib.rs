@@ -147,6 +147,7 @@ impl fmt::Display for FmtSpan {
 mod tests {
 
     use super::*;
+    use indoc::indoc;
     use pretty_assertions::assert_str_eq;
     use syn::spanned::Spanned as _;
 
@@ -208,5 +209,57 @@ mod tests {
         let mut synsert = Synsert::new(source_code);
         synsert.queue_edit_at(ast.ty.span(), Operation::Remove);
         assert_str_eq!(synsert.apply_all(), "const 𓀕:  = ();");
+    }
+
+    #[test]
+    fn single_line_multi_edit() {
+        let source_code = "const FOO: () = ();";
+        let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
+
+        let mut synsert = Synsert::new(source_code);
+        synsert.replace(ast.expr.span(), "make_bar()");
+        synsert.replace(ast.ident.span(), "BAR");
+        assert_str_eq!(synsert.apply_all(), "const BAR: () = make_bar();");
+
+        let mut synsert = Synsert::new(source_code);
+        synsert.prepend(ast.expr.span(), "make_foo_bar");
+        synsert.append(ast.ident.span(), "_BAR");
+        assert_str_eq!(synsert.apply_all(), "const FOO_BAR: () = make_foo_bar();");
+    }
+
+    #[test]
+    fn multi_line_single_edit() {
+        let source_code = indoc! {"
+            const FOO: () = {
+                do_stuff();
+                do_more_stuff();
+            };"
+        };
+        let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
+
+        let mut synsert = Synsert::new(source_code);
+        synsert.replace(ast.expr.span(), "make_foo()");
+        assert_str_eq!(synsert.apply_all(), "const FOO: () = make_foo();");
+
+        let source_code = indoc! {"
+            const FOOD: () = ();
+            const FOO: () = {
+                do_stuff();
+                do_more_stuff();
+            };
+            const FOO_FIGHTERS: () = ();"
+        };
+        let ast = syn::parse_str::<syn::File>(source_code).unwrap();
+
+        let mut synsert = Synsert::new(source_code);
+        synsert.replace(ast.items[1].span(), "const BAR: () = ();");
+        assert_str_eq!(
+            synsert.apply_all(),
+            indoc! {"
+                const FOOD: () = ();
+                const BAR: () = ();
+                const FOO_FIGHTERS: () = ();"
+            }
+        );
     }
 }
