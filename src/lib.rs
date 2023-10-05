@@ -15,7 +15,7 @@
 //! let source_code = "const NUM: usize = 1;"; // get the source text
 //!
 //! // create an AST and a helper struct from the same source code
-//! let mut synsert = synsert::Synsert::new(source_code);
+//! let mut synsert = synsert::Editor::new(source_code);
 //! let parsed = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
 //!
 //! synsert.append(parsed.ident.span(), "_YAKS");
@@ -35,7 +35,7 @@ use ropey::Rope;
 /// Keeps track of edits so you can apply them correctly all-at-once.
 ///
 /// See [module documentation](mod@self) for more.
-pub struct Synsert {
+pub struct Editor {
     source_code: Rope,
     /// Detect edit collisions.
     ///
@@ -43,7 +43,7 @@ pub struct Synsert {
     edits: RangeInclusiveMap<usize, Operation>,
 }
 
-impl Synsert {
+impl Editor {
     /// Create a new editor.
     ///
     /// Syntax tree types used with this editor must be from the same source.
@@ -202,19 +202,19 @@ mod tests {
         let source_code = "const FOO: () = ();";
         let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Replace(String::from("BAR")));
         assert_str_eq!(synsert.apply_all(), "const BAR: () = ();");
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Prepend(String::from("TO")));
         assert_str_eq!(synsert.apply_all(), "const TOFOO: () = ();");
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Append(String::from("BAR")));
         assert_str_eq!(synsert.apply_all(), "const FOOBAR: () = ();");
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Remove);
         assert_str_eq!(synsert.apply_all(), "const : () = ();");
     }
@@ -223,19 +223,19 @@ mod tests {
     fn single_line_single_edit_multibyte() {
         let source_code = "const 𓀕: () = ();";
         let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.expr.span(), Operation::Replace(String::from("𓀠")));
         assert_str_eq!(synsert.apply_all(), "const 𓀕: () = 𓀠;");
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Prepend(String::from("𓀠")));
         assert_str_eq!(synsert.apply_all(), "const 𓀠𓀕: () = ();");
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ident.span(), Operation::Append(String::from("𓀠")));
         assert_str_eq!(synsert.apply_all(), "const 𓀕𓀠: () = ();");
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.queue_edit_at(ast.ty.span(), Operation::Remove);
         assert_str_eq!(synsert.apply_all(), "const 𓀕:  = ();");
     }
@@ -245,12 +245,12 @@ mod tests {
         let source_code = "const FOO: () = ();";
         let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.replace(ast.expr.span(), "make_bar()");
         synsert.replace(ast.ident.span(), "BAR");
         assert_str_eq!(synsert.apply_all(), "const BAR: () = make_bar();");
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.prepend(ast.expr.span(), "make_foo_bar");
         synsert.append(ast.ident.span(), "_BAR");
         assert_str_eq!(synsert.apply_all(), "const FOO_BAR: () = make_foo_bar();");
@@ -266,7 +266,7 @@ mod tests {
         };
         let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.replace(ast.expr.span(), "make_foo()");
         assert_str_eq!(synsert.apply_all(), "const FOO: () = make_foo();");
 
@@ -280,7 +280,7 @@ mod tests {
         };
         let ast = syn::parse_str::<syn::File>(source_code).unwrap();
 
-        let mut synsert = Synsert::new(source_code);
+        let mut synsert = Editor::new(source_code);
         synsert.replace(ast.items[1].span(), "const BAR: () = ();");
         assert_str_eq!(
             synsert.apply_all(),

@@ -8,7 +8,7 @@ use syn::{
     visit::{self, Visit},
     Expr, ExprTry, ItemFn, Local, ReturnType, Stmt,
 };
-use synsert::Synsert;
+use synsert::Editor;
 
 /// A simple program that converts `#[test]` functions that return `Result`s to not return anything.
 #[derive(Parser)]
@@ -24,18 +24,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     for path in file.iter() {
         print!("{}...", Style::new().apply_to(path.display()).dim());
         let before = fs::read_to_string(path)?;
-        let mut editor = Editor {
-            inner: Synsert::new(&before),
+        let mut visitor = Visitor {
+            editor: Editor::new(&before),
         };
         let Ok(ast) = syn::parse_file(&before) else {
             println!("skipped (failed to parse)");
             continue;
         };
-        editor.visit_file(&ast);
-        match editor.inner.edits().is_empty() {
+        visitor.visit_file(&ast);
+        match visitor.editor.edits().is_empty() {
             true => println!("no edits."),
             false => {
-                let after = editor.inner.apply_all();
+                let after = visitor.editor.apply_all();
 
                 println!("edits to apply!");
                 print_diff(&before, &after);
@@ -54,15 +54,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-struct Editor {
-    inner: Synsert,
+struct Visitor {
+    editor: Editor,
 }
 
-impl<'ast> Visit<'ast> for Editor {
+impl<'ast> Visit<'ast> for Visitor {
     fn visit_item_fn(&mut self, i: &'ast ItemFn) {
         if i.attrs.iter().any(|attr| attr == &parse_quote!(#[test])) {
             if let ReturnType::Type(..) = i.sig.output {
-                self.inner.remove(i.sig.output.span());
+                self.editor.remove(i.sig.output.span());
                 for stmt in &i.block.stmts {
                     match stmt {
                         // let foo = bar?;
@@ -70,12 +70,12 @@ impl<'ast> Visit<'ast> for Editor {
                             init: Some(init), ..
                         }) => {
                             if let Expr::Try(ExprTry { question_token, .. }) = &*init.expr {
-                                self.inner.replace(question_token.span(), ".unwrap()")
+                                self.editor.replace(question_token.span(), ".unwrap()")
                             }
                         }
                         // top level expression
                         Stmt::Expr(Expr::Try(ExprTry { question_token, .. }), _) => {
-                            self.inner.replace(question_token.span(), ".unwrap()")
+                            self.editor.replace(question_token.span(), ".unwrap()")
                         }
                         _ => {}
                     }
