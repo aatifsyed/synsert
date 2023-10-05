@@ -1,18 +1,40 @@
+//! A primitive for programatically editing files using [`syn`](https://docs.rs/syn).
+//!
+//! `syn` is the de-facto standard for parsing Rust. Its syntax tree is easy to
+//! use, but it is lossy - if you parse a file, edit it with syn, and unparse
+//! it, you'll lose all your comments and spacing (for example).
+//!
+//! [Rust Analyzer's syntax crate](https://docs.rs/ra_ap_syntax) has a lossless
+//! syntax tree, which powers IDE assists, but it's far more difficult to use.
+//!
+//! [`Synsert`] allows you to use `syn`'s syntax tree to write your Structured
+//! Search and Replace tools, or IDE assists.
+//!
+//! ```
+//! # use syn::spanned::Spanned as _;
+//! let source_code = "const NUM: usize = 1;"; // get the source text
+//!
+//! // create an AST and a helper struct from the same source code
+//! let mut synsert = synsert::Synsert::new(source_code);
+//! let parsed = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
+//!
+//! synsert.append(parsed.ident.span(), "_YAKS");
+//! synsert.replace(parsed.expr.span(), "9001");
+//!
+//! let edited = synsert.apply_all();
+//!
+//! assert_eq!(edited, "const NUM_YAKS: usize = 9001;");
+//! ```
+
 use std::{cmp::Reverse, fmt, ops::RangeInclusive};
 
 use proc_macro2::{LineColumn, Span};
 use rangemap::RangeInclusiveMap;
 use ropey::Rope;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
-pub enum Operation {
-    Append(String),
-    Prepend(String),
-    Replace(String),
-    Remove,
-}
-
-/// Keeps track of edits so you can apply them correctly all-at-once
+/// Keeps track of edits so you can apply them correctly all-at-once.
+///
+/// See [module documentation](mod@self) for more.
 pub struct Synsert {
     source_code: Rope,
     /// Detect edit collisions.
@@ -22,6 +44,9 @@ pub struct Synsert {
 }
 
 impl Synsert {
+    /// Create a new editor.
+    ///
+    /// Syntax tree types used with this editor must be from the same source.
     pub fn new(source_code: &str) -> Self {
         Self {
             source_code: Rope::from_str(source_code),
@@ -111,6 +136,15 @@ impl Synsert {
     pub fn edits(&self) -> &RangeInclusiveMap<usize, Operation> {
         &self.edits
     }
+}
+
+/// An operation on the source text.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+pub enum Operation {
+    Append(String),
+    Prepend(String),
+    Replace(String),
+    Remove,
 }
 
 fn apply(rope: &mut Rope, range: &RangeInclusive<usize>, operation: &Operation) {
