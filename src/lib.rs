@@ -144,7 +144,6 @@ impl Editor {
             FmtSpan(span)
         );
 
-        #[cfg(never)] // see bug below
         if let Some(reported) = span.source_text() {
             let internal = self.source_code.slice(start..=end);
             assert_eq!(
@@ -236,23 +235,6 @@ mod tests {
                 .success(),
             "README.md is out of date - bless the new version by running `cargo rdme`"
         )
-    }
-
-    #[test]
-    fn proc_macro2_source_text_is_correct_for_single_byte() {
-        let source_code = "const FOO: () = ();";
-        let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
-        assert_eq!("FOO", ast.ident.span().source_text().unwrap())
-    }
-
-    /// https://github.com/dtolnay/proc-macro2/issues/408
-    #[test]
-    #[should_panic = "is not a char boundary"]
-    fn proc_macro2_source_text_is_incorrect_for_multibyte() {
-        let source_code = "const 𓀕: () = ();";
-        let ast = syn::parse_str::<syn::ItemConst>(source_code).unwrap();
-        let reported = ast.ident.span().source_text(); // boom
-        assert_eq!("𓀕", reported.unwrap())
     }
 
     #[test]
