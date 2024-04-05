@@ -156,40 +156,47 @@ impl Editor {
             num_lines
         );
 
-        let start = span.start();
-        self.assert_column(start, span);
-        let start = self.source_code_rope.line_to_char(start.line - 1) + start.column;
-
-        let end = span.end();
-        self.assert_column(end, span);
-        let end = self.source_code_rope.line_to_char(end.line - 1) + end.column - 1; // to inclusive
+        let range = span2range(&self.source_code_rope, span);
 
         assert!(
-            !self.edits.overlaps(&(start..=end)),
+            !self.edits.overlaps(&range),
             "an edit has already been made in the range {}",
             FmtSpan(span)
         );
 
         if let Some(reported) = span.source_text() {
-            let internal = self.source_code_rope.slice(start..=end);
+            let internal = self.source_code_rope.slice(range.clone());
             assert_eq!(
                 internal, reported,
                 "the span's reported source text does not match our calculated source text"
             )
         }
 
-        self.edits.insert(start..=end, operation);
+        self.edits.insert(range, operation);
         self
     }
-    fn assert_column(&self, coord: LineColumn, span: Span) {
-        let num_cols = self.source_code_rope.line(coord.line - 1).len_chars();
-        assert!(
-            num_cols >= coord.column,
-            "span exceeds end of line. span is {} but there are {} columns",
-            FmtSpan(span),
-            num_cols
-        );
-    }
+}
+
+fn span2range(txt: &Rope, span: Span) -> RangeInclusive<usize> {
+    let start = span.start();
+    assert_column(txt, start, span);
+    let start = txt.line_to_char(start.line - 1) + start.column;
+
+    let end = span.end();
+    assert_column(txt, end, span);
+    let end = txt.line_to_char(end.line - 1) + end.column - 1; // to inclusive
+
+    start..=end
+}
+
+fn assert_column(txt: &Rope, coord: LineColumn, span: Span) {
+    let num_cols = txt.line(coord.line - 1).len_chars();
+    assert!(
+        num_cols >= coord.column,
+        "span exceeds end of line. span is {} but there are {} columns",
+        FmtSpan(span),
+        num_cols
+    );
 }
 
 /// An operation on the source text.
