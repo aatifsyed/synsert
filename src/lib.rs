@@ -38,7 +38,10 @@ use syn::{parse::Parse, spanned::Spanned};
 /// See [module documentation](mod@self) for more.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Editor {
-    source_code: Rope,
+    /// Kept for exposing to users
+    source_code_string: String,
+    /// Kept for line-column assertions
+    source_code_rope: Rope,
     /// Detect edit collisions.
     ///
     /// char-indexed.
@@ -55,7 +58,8 @@ impl Editor {
     /// Syntax tree types used with this editor must be from the same source.
     pub fn new(source_code: &str) -> Self {
         Self {
-            source_code: Rope::from_str(source_code),
+            source_code_string: String::from(source_code),
+            source_code_rope: Rope::from_str(source_code),
             edits: RangeInclusiveMap::new(),
         }
     }
@@ -115,61 +119,16 @@ impl Editor {
     pub fn remove(&mut self, node: impl Spanned) -> &mut Self {
         self.queue_edit_at(node.span(), Operation::Remove)
     }
-    /// # Panics
-    /// - if `span` contains an out-of-bounds line or column for `source_code`.
-    /// - if there is already an edit with a `span` that overlaps with this one.
-    fn queue_edit_at(&mut self, span: Span, operation: Operation) -> &mut Self {
-        // proc-macro2::Span's line's are 1-indexed
-        // ropey::Rope's lines are 0-indexed
-
-        let num_lines = self.source_code.len_lines();
-        assert!(
-            num_lines >= span.end().line,
-            "span exceeds end of file. span is {} but there are {} lines",
-            FmtSpan(span),
-            num_lines
-        );
-
-        let start = span.start();
-        self.assert_column(start, span);
-        let start = self.source_code.line_to_char(start.line - 1) + start.column;
-
-        let end = span.end();
-        self.assert_column(end, span);
-        let end = self.source_code.line_to_char(end.line - 1) + end.column - 1; // to inclusive
-
-        assert!(
-            !self.edits.overlaps(&(start..=end)),
-            "an edit has already been made in the range {}",
-            FmtSpan(span)
-        );
-
-        if let Some(reported) = span.source_text() {
-            let internal = self.source_code.slice(start..=end);
-            assert_eq!(
-                internal, reported,
-                "the span's reported source text does not match our calculated source text"
-            )
-        }
-
-        self.edits.insert(start..=end, operation);
-        self
-    }
-    fn assert_column(&self, coord: LineColumn, span: Span) {
-        let num_cols = self.source_code.line(coord.line - 1).len_chars();
-        assert!(
-            num_cols >= coord.column,
-            "span exceeds end of line. span is {} but there are {} columns",
-            FmtSpan(span),
-            num_cols
-        );
+    /// Get a copy of the _unedited_ text.
+    pub fn source(&self) -> &str {
+        &self.source_code_string
     }
     /// Apply all the edits, returning the final text.
     pub fn finish(&self) -> String {
         let mut edits = self.edits.iter().collect::<Vec<_>>();
         edits.sort_by_key(|(range, _op)| Reverse(*range.start()));
 
-        let mut source_code = self.source_code.clone();
+        let mut source_code = self.source_code_rope.clone();
 
         for (range, operation) in edits {
             apply(&mut source_code, range, operation)
@@ -180,6 +139,56 @@ impl Editor {
     /// See if this editor has accumulated any edits.
     pub fn is_empty(&self) -> bool {
         self.edits.is_empty()
+    }
+
+    /// # Panics
+    /// - if `span` contains an out-of-bounds line or column for `source_code`.
+    /// - if there is already an edit with a `span` that overlaps with this one.
+    fn queue_edit_at(&mut self, span: Span, operation: Operation) -> &mut Self {
+        // proc-macro2::Span's line's are 1-indexed
+        // ropey::Rope's lines are 0-indexed
+
+        let num_lines = self.source_code_rope.len_lines();
+        assert!(
+            num_lines >= span.end().line,
+            "span exceeds end of file. span is {} but there are {} lines",
+            FmtSpan(span),
+            num_lines
+        );
+
+        let start = span.start();
+        self.assert_column(start, span);
+        let start = self.source_code_rope.line_to_char(start.line - 1) + start.column;
+
+        let end = span.end();
+        self.assert_column(end, span);
+        let end = self.source_code_rope.line_to_char(end.line - 1) + end.column - 1; // to inclusive
+
+        assert!(
+            !self.edits.overlaps(&(start..=end)),
+            "an edit has already been made in the range {}",
+            FmtSpan(span)
+        );
+
+        if let Some(reported) = span.source_text() {
+            let internal = self.source_code_rope.slice(start..=end);
+            assert_eq!(
+                internal, reported,
+                "the span's reported source text does not match our calculated source text"
+            )
+        }
+
+        self.edits.insert(start..=end, operation);
+        self
+    }
+    fn assert_column(&self, coord: LineColumn, span: Span) {
+        let num_cols = self.source_code_rope.line(coord.line - 1).len_chars();
+        assert!(
+            num_cols >= coord.column,
+            "span exceeds end of line. span is {} but there are {} columns",
+            FmtSpan(span),
+            num_cols
+        );
     }
 }
 
