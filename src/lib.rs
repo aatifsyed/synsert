@@ -123,6 +123,16 @@ impl Editor {
     pub fn source(&self) -> &str {
         &self.source_code_string
     }
+    /// Get a copy of the _unedited_ text at the given location.
+    ///
+    /// # Panics
+    /// - if `span` is out of bounds.
+    pub fn source_at(&self, span: impl Spanned) -> &str {
+        let span = span2range(&self.source_code_rope, span.span());
+        let start = self.source_code_rope.char_to_byte(*span.start());
+        let end = self.source_code_rope.char_to_byte(*span.end());
+        &self.source_code_string[start..end]
+    }
     /// Apply all the edits, returning the final text.
     pub fn finish(&self) -> String {
         let mut edits = self.edits.iter().collect::<Vec<_>>();
@@ -136,9 +146,21 @@ impl Editor {
 
         source_code.into()
     }
+    /// Get the number of accumulated edits.
+    pub fn len(&self) -> usize {
+        self.edits.len()
+    }
     /// See if this editor has accumulated any edits.
     pub fn is_empty(&self) -> bool {
         self.edits.is_empty()
+    }
+    /// See if this editor has any edits at the given location.
+    ///
+    /// # Panics
+    /// - if `span` is out of bounds
+    pub fn is_empty_at(&self, span: impl Spanned) -> bool {
+        let span = span2range(&self.source_code_rope, span.span());
+        self.edits.overlaps(&span)
     }
 
     /// # Panics
