@@ -16,6 +16,7 @@ proc-macro2 = { version = "1.0.68", default-features = false, features = [
 ] }
 rangemap = "1.4.0"
 ropey = "1.6.0"
+rustyline = "14.0.0"
 syn = { version = "2.0.37", default-features = false, features = [
     "printing",
     "parsing",
@@ -27,7 +28,9 @@ console = "0.15.7"
 derive-quote-to-tokens = "0.1.1"
 dialoguer = { version = "0.11.0", default-features = false }
 indoc = "2.0.4"
+itertools = "0.12.1"
 pretty_assertions = "1.4.0"
+prettyplease = "0.2.17"
 quote = { version = "1.0.35", default-features = false }
 rustc_parse_format = { git = "https://github.com/rust-lang/rust", default-features = false }
 similar = { version = "2.2.1", features = ["text", "inline", "bytes"] }
@@ -37,3 +40,4 @@ syn = { version = "2.0.37", default-features = false, features = [
     "visit",
     "clone-impls",
 ] }
+syn-miette = "0.3.0"

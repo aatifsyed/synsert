@@ -2,11 +2,15 @@ mod common;
 
 use clap::Parser;
 use common::print_diff;
-use console::Style;
+use console::{Style, Term};
+use itertools::Itertools as _;
 use proc_macro2::Span;
-use quote::{quote, ToTokens};
-use std::{error::Error, fs, path::PathBuf};
-use syn::{punctuated::Punctuated, visit::Visit, Expr, Ident, LitStr, Token};
+use quote::{quote, ToTokens as _};
+use std::{error::Error, fs, io, path::PathBuf};
+use syn::{
+    parse_quote, punctuated::Punctuated, spanned::Spanned as _, visit::Visit, Expr, Ident, LitStr,
+    Token,
+};
 use synsert::Editor;
 
 use crate::{
@@ -23,46 +27,57 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let Args { file } = Args::parse();
 
-    let mut count = 0;
+    let mut edited_files = 0;
+    let mut edited_call_sites = 0;
     for path in file.iter() {
-        print!("{}...", Style::new().apply_to(path.display()).dim());
+        println!("{}", Style::new().apply_to(path.display()).dim());
         let before = fs::read_to_string(path)?;
         let mut visitor = Visitor {
             editor: Editor::new(&before),
+            error: false,
         };
         let Ok(ast) = syn::parse_file(&before) else {
-            println!("skipped (failed to parse)");
+            println!("skipped (failed to parse file)");
             continue;
         };
         visitor.visit_file(&ast);
-        match visitor.editor.is_empty() {
-            true => println!("no edits."),
-            false => {
+        match visitor.editor.len() {
+            0 => {}
+            n => {
                 let after = visitor.editor.finish();
-
-                println!("edits to apply!");
                 print_diff(&before, &after);
 
                 if dialoguer::Confirm::new()
                     .with_prompt("save the edited file? ")
+                    .default(true)
                     .interact()?
                 {
                     fs::write(path, after)?;
-                    count += 1
+                    edited_files += 1;
+                    edited_call_sites += n;
                 }
             }
         }
     }
-    println!("edited {} files", count);
+    println!(
+        "edited {} call sites in {} files",
+        edited_call_sites, edited_files
+    );
+    Term::stderr().show_cursor()?; // clean up after rustyline on Ctrl+C
     Ok(())
 }
 
 struct Visitor {
     editor: Editor,
+    error: bool,
 }
 
 impl<'ast> Visit<'ast> for Visitor {
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        if self.error {
+            return; // short circuit
+        };
+
         if !node.path.segments.last().is_some_and(|it| {
             matches!(
                 it.ident.to_string().as_str(),
@@ -72,8 +87,15 @@ impl<'ast> Visit<'ast> for Visitor {
             return; // not the right macro
         }
 
-        let Ok(body) = node.parse_body::<FormatArgs>() else {
-            return; // don't understand the args
+        let body = match node.parse_body::<FormatArgs>() {
+            Ok(it) => it,
+            Err(e) => {
+                println!(
+                    "failed to parse callsite as `format!(..)`-style macro, skipping:\n{}\n",
+                    syn_miette::Error::new(e, self.editor.source()).render()
+                );
+                return;
+            }
         };
 
         let slug = body
@@ -87,9 +109,15 @@ impl<'ast> Visit<'ast> for Visitor {
                 acc += el;
                 acc
             });
+        let slug = slug.trim();
+        let slug = match slug.is_empty() {
+            true => None,
+            false => Some(slug),
+        };
 
         let mut fields = Punctuated::<_, Token![,]>::new();
 
+        let mut failed = vec![];
         for arg in body.pieces.iter().filter_map(|it| match it {
             OwnedPiece::String(_) => None,
             OwnedPiece::NextArgument(it) => Some(&**it),
@@ -102,13 +130,28 @@ impl<'ast> Visit<'ast> for Visitor {
             match &arg.position {
                 OwnedPosition::ArgumentImplicitlyIs(ix) | OwnedPosition::ArgumentIs(ix) => {
                     match body.positional_args.get(*ix) {
-                        Some(Expr::Path(it)) if it.path.segments.len() == 1 => fields.push(
-                            Field::Shorthand(sigil, syn::parse2(it.to_token_stream()).unwrap()),
-                        ),
-                        Some(Expr::Field(it)) => fields.push(Field::Shorthand(
-                            sigil,
-                            syn::parse2(it.to_token_stream()).unwrap(),
-                        )),
+                        Some(fail @ Expr::Path(it)) if it.path.segments.len() == 1 => {
+                            match syn::parse2(it.to_token_stream()) {
+                                Ok(it) => fields.push(Field::Shorthand(sigil, it)),
+                                Err(e) => {
+                                    failed.push(fail);
+                                    println!(
+                                        "failed to parse argument:\n{}",
+                                        syn_miette::Error::new(e, self.editor.source()).render()
+                                    )
+                                }
+                            }
+                        }
+                        Some(fail @ Expr::Field(it)) => match syn::parse2(it.to_token_stream()) {
+                            Ok(it) => fields.push(Field::Shorthand(sigil, it)),
+                            Err(e) => {
+                                failed.push(fail);
+                                println!(
+                                    "failed to parse argument:\n{}",
+                                    syn_miette::Error::new(e, self.editor.source()).render()
+                                )
+                            }
+                        },
                         Some(it) => fields.push(Field::KV(
                             FieldKey::Quoted(LitStr::new(
                                 it.to_token_stream().to_string().as_str(),
@@ -118,7 +161,19 @@ impl<'ast> Visit<'ast> for Visitor {
                             sigil,
                             it.clone(),
                         )),
-                        None => return, // no such arg
+                        None => {
+                            println!(
+                                "{}",
+                                syn_miette::Error::new(
+                                    syn::Error::new(
+                                        node.span(),
+                                        format!("missing positional argument at index {}", ix),
+                                    ),
+                                    self.editor.source(),
+                                )
+                                .render()
+                            )
+                        }
                     }
                 }
                 OwnedPosition::ArgumentNamed(it) => {
@@ -136,14 +191,103 @@ impl<'ast> Visit<'ast> for Visitor {
             }
         }
 
-        if fields.is_empty() {
+        if fields.is_empty() && failed.is_empty() {
             return; // do nothing
         }
 
-        self.editor.replace(
-            &node.tokens,
-            quote!(#fields, #slug).into_token_stream().to_string(),
-        );
+        let before = self.editor.source_at(&node.tokens);
+        let after = prettyprint(quote!(#fields, #slug))
+            .replace("? ", "?")
+            .replace("% ", "%");
+
+        print_diff(before, &after);
+        println!();
+
+        match Action::interact(failed.is_empty()) {
+            Ok(Action::Skip) => println!("skipped."),
+            Ok(Action::Edit) => match rustyline::DefaultEditor::new() {
+                Ok(mut it) => match it.readline_with_initial("", (after.as_str(), "")) {
+                    Ok(it) => match it.is_empty() {
+                        true => println!("skipped."),
+                        false => {
+                            self.editor.replace(&node.tokens, it);
+                            println!("applied.")
+                        }
+                    },
+                    Err(e) => {
+                        self.error = true;
+                        println!("Error: {}", e)
+                    }
+                },
+                Err(e) => {
+                    self.error = true;
+                    println!("Error: {}", e)
+                }
+            },
+            Ok(Action::Approve) => {
+                self.editor.replace(&node.tokens, after);
+                println!("applied.")
+            }
+            Err(e) => {
+                self.error = true;
+                println!("Error: {}", e)
+            }
+        }
+    }
+}
+
+fn prettyprint(tokens: proc_macro2::TokenStream) -> String {
+    let span = Span::call_site();
+    prettyplease::unparse(&syn::File {
+        shebang: None,
+        attrs: vec![],
+        items: vec![syn::Item::Macro(syn::ItemMacro {
+            attrs: vec![],
+            ident: None,
+            mac: syn::Macro {
+                path: parse_quote!(__remove_me),
+                bang_token: Token![!](span),
+                delimiter: syn::MacroDelimiter::Paren(syn::token::Paren(span)),
+                tokens,
+            },
+            semi_token: Some(Token![;](span)),
+        })],
+    })
+    .trim_start_matches("__remove_me!(")
+    .trim_end()
+    .trim_end_matches(");")
+    .lines()
+    .map(|it| it.trim())
+    .join(" ")
+    .trim()
+    .into()
+}
+
+enum Action {
+    Skip,
+    Edit,
+    Approve,
+}
+
+impl Action {
+    fn interact(can_approve: bool) -> io::Result<Self> {
+        let mut options = vec!["skip", "edit"];
+        if can_approve {
+            options.push("approve")
+        }
+        match dialoguer::Select::new()
+            .default(0)
+            .items(&options)
+            .interact()
+        {
+            Ok(n) => Ok(match n {
+                0 => Self::Skip,
+                1 => Self::Edit,
+                2 => Self::Approve,
+                _ => unreachable!(),
+            }),
+            Err(dialoguer::Error::IO(e)) => Err(e),
+        }
     }
 }
 
@@ -218,11 +362,6 @@ mod format_args {
         pub pieces: Vec<OwnedPiece>,
         pub positional_args: Vec<Expr>,
         pub named_args: HashMap<Ident, Expr>,
-    }
-
-    #[test]
-    fn test2() {
-        let _: FormatArgs = dbg!(syn::parse_quote!("hello {:}"));
     }
 
     #[test]
