@@ -1,8 +1,9 @@
 //! A primitive for programatically editing files using [`syn`].
 //!
-//! `syn` is the de-facto standard for parsing Rust. Its syntax tree is easy to
-//! use, but it is lossy - if you parse a file, edit it with syn, and unparse
-//! it, you'll lose all your comments and spacing (for example).
+//! `syn` is the de-facto standard for parsing Rust in user code.
+//! Its syntax tree is easy to use, but it is lossy - if you parse a file,
+//! edit it with syn, and unparse it,
+//! you'll lose all your comments and spacing (for example).
 //!
 //! [Rust Analyzer's syntax crate](https://docs.rs/ra_ap_syntax) has a lossless
 //! syntax tree, which powers IDE assists, but it's far more difficult to use.
