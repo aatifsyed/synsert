@@ -155,6 +155,10 @@ impl Editor {
     pub fn is_empty(&self) -> bool {
         self.edits.is_empty()
     }
+    /// Remove all edits from this editor.
+    pub fn clear(&mut self) {
+        self.edits.clear()
+    }
     /// See if this editor has any edits at the given location.
     ///
     /// # Panics
@@ -254,6 +258,210 @@ impl fmt::Display for FmtSpan {
             start.line, start.column, end.line, end.column
         ))
     }
+}
+
+/// Batteries-included framework for writing structural search and replace programs
+#[cfg(feature = "harness")]
+pub mod harness {
+    use crate::Editor;
+    use console::{Style, Term, TermFamily, TermTarget};
+    use similar::{ChangeTag, TextDiff};
+    use std::{
+        fmt, fs,
+        io::{self, Write as _},
+        path::Path,
+    };
+    use syn::visit::Visit;
+
+    // https://github.com/mitsuhiko/similar/blob/de455873dab514082bf6e7bb5f0029837fe280d5/examples/terminal-inline.rs
+    pub fn print_diff_on(term: &Term, old: &str, new: &str) -> io::Result<()> {
+        let diff = TextDiff::from_lines(old, new);
+
+        for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
+            if idx > 0 {
+                core::writeln!(&mut &*term, "{:-^1$}", "-", 80)?;
+            }
+            for op in group {
+                for change in diff.iter_inline_changes(op) {
+                    let (sign, s) = match change.tag() {
+                        ChangeTag::Delete => ("-", Style::new().red()),
+                        ChangeTag::Insert => ("+", Style::new().green()),
+                        ChangeTag::Equal => (" ", Style::new().dim()),
+                    };
+                    write!(
+                        term,
+                        "{}{} |{}",
+                        ~ Style::new().dim() => Line(change.old_index()),
+                        ~ Style::new().dim() => Line(change.new_index()),
+                        ~ Style::new().bold() => sign
+                    )?;
+                    for (emphasized, value) in change.iter_strings_lossy() {
+                        if emphasized {
+                            write!(term, "{}", ~ s.clone().underlined().on_black() => value)?;
+                        } else {
+                            write!(term, "{}", ~ &s => value)?;
+                        }
+                    }
+                    if change.missing_newline() {
+                        writeln!(term, "")?;
+                    }
+                }
+            }
+        }
+
+        struct Line(Option<usize>);
+        impl fmt::Display for Line {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                match self.0 {
+                    None => f.write_str("    "),
+                    Some(idx) => f.write_fmt(format_args!("{:<4}", idx + 1)),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn run_on<P, V>(
+        files: impl IntoIterator<Item = P>,
+        mut start: impl FnMut(&Path, Editor) -> Option<V>,
+        mut end: impl FnMut(V) -> Option<Editor>,
+        term: &Term,
+        diff_and_confirm: bool,
+    ) -> io::Result<Report>
+    where
+        P: AsRef<Path>,
+        V: for<'ast> Visit<'ast>,
+    {
+        let mut report = Report::default();
+
+        let yellow = Style::new().yellow();
+        let red = Style::new().red();
+        let green = Style::new().green();
+
+        for file in files {
+            let file = file.as_ref();
+            write!(term, "file {}...", file.display())?;
+            match fs::read_to_string(file) {
+                Ok(orig) => {
+                    match Editor::new_with_ast(&orig) {
+                        Ok((editor, ast)) => match start(file, editor) {
+                            Some(mut visitor) => {
+                                // flush in case the user wants to do IO
+                                term.flush()?;
+                                visitor.visit_file(&ast);
+                                match end(visitor) {
+                                    Some(editor) => match editor.len() {
+                                        0 => {
+                                            writeln!(term, "{} (no edits)", ~ &yellow => "skipped")?
+                                        }
+                                        n => match diff_and_confirm {
+                                            true => {
+                                                writeln!(term, "{n} edits!")?;
+                                                let new = editor.finish();
+                                                print_diff_on(term, &orig, &new)?;
+                                                match dialoguer::Confirm::new()
+                                                    .with_prompt("save the edited file? ")
+                                                    .default(true)
+                                                    .interact_on(term)
+                                                    .map_err(|dialoguer::Error::IO(it)| it)?
+                                                {
+                                                    true => match fs::write(file, new) {
+                                                        Ok(()) => {
+                                                            report.files += 1;
+                                                            report.edits += n
+                                                        }
+                                                        Err(e) => {
+                                                            report.failed += 1;
+                                                            writeln!(term, "{}: failed to write: {e}", ~ &red => "error")?;
+                                                        }
+                                                    },
+                                                    false => {}
+                                                }
+                                            }
+                                            false => match fs::write(file, editor.finish()) {
+                                                Ok(()) => {
+                                                    report.files += 1;
+                                                    report.edits += n;
+                                                    writeln!(term, "{} ({n} edits)", ~ &green => "ok")?
+                                                }
+                                                Err(e) => {
+                                                    report.failed += 1;
+                                                    writeln!(term, "{} (failed to write: {e})", ~ &red => "error")?;
+                                                }
+                                            },
+                                        },
+                                    },
+                                    None => writeln!(term, "{}", ~ &yellow => "skipped" )?,
+                                }
+                            }
+                            None => writeln!(term, "{}", ~ &yellow => "skipped" )?,
+                        },
+                        Err(e) => {
+                            report.failed += 1;
+                            writeln!(term, "{} (failed to parse: {e})", ~ &red => "error")?;
+                        }
+                    };
+                }
+                Err(e) => {
+                    report.failed += 1;
+                    writeln!(&term, "{} (failed to read: {e})", ~ &red => "error" )?;
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+    pub struct Report {
+        pub failed: usize,
+        pub files: usize,
+        pub edits: usize,
+    }
+
+    fn should_color(term: &Term) -> bool {
+        let env = match term.target() {
+            TermTarget::Stdout => console::colors_enabled(),
+            TermTarget::Stderr => console::colors_enabled_stderr(),
+            TermTarget::ReadWritePair(_) => false,
+        };
+        term.is_term()
+            && term.features().colors_supported()
+            && term.features().is_attended()
+            && env
+            && matches!(
+                term.features().family(),
+                TermFamily::UnixTerm | TermFamily::WindowsConsole
+            )
+    }
+
+    macro_rules! write {
+        ($target:expr, $fmt:literal $(, $(~ $style:expr => )? $arg:expr)* $(,)?) => {{
+            let mut _target: &console::Term = $target;
+            match $crate::harness::should_color(&_target) {
+                true => _target.write_fmt(format_args!($fmt, $({
+                    let _style = $crate::harness::Style::new();
+                    $(
+                        let _style = $style;
+                    )?
+                    _style.apply_to($arg)
+                }),*)),
+                false => _target.write_fmt(format_args!($fmt, $($arg),*)),
+            }
+        }};
+    }
+    pub(crate) use write;
+    macro_rules! writeln {
+        ($target:expr, $($tt:tt)*) => {{
+            let mut _target: &console::Term = $target;
+            match $crate::harness::write!(&mut _target, $($tt)*) {
+                Ok(()) => _target.write_fmt(format_args!("\n")),
+                Err(e) => Err(e)
+            }
+        }};
+    }
+    pub(crate) use writeln;
 }
 
 #[cfg(test)]
