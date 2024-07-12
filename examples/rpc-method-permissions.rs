@@ -1,8 +1,6 @@
-mod common;
-
 use clap::Parser;
 use quote::ToTokens;
-use std::{error::Error, path::PathBuf};
+use std::path::PathBuf;
 use syn::visit::Visit;
 use synsert::Editor;
 
@@ -12,12 +10,12 @@ struct Args {
     file: Vec<PathBuf>,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
     let Args { file } = Args::parse();
-    common::harness(
-        file.iter().map(PathBuf::as_path),
-        |editor| Visitor { editor },
-        |Visitor { editor }| editor,
+    synsert::harness::run(
+        file,
+        |_, editor| Some(Visitor { editor }),
+        |Visitor { editor }| Some(editor),
     )
 }
 

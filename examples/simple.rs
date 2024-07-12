@@ -1,9 +1,5 @@
-mod common;
-
 use clap::Parser;
-use common::print_diff;
-use console::Style;
-use std::{error::Error, fs, path::PathBuf};
+use std::{error::Error, path::PathBuf};
 use syn::{
     parse_quote,
     spanned::Spanned as _,
@@ -22,38 +18,11 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let Args { file } = Args::parse();
 
-    let mut count = 0;
-    for path in file.iter() {
-        print!("{}...", Style::new().apply_to(path.display()).dim());
-        let before = fs::read_to_string(path)?;
-        let mut visitor = Visitor {
-            editor: Editor::new(&before),
-        };
-        let Ok(ast) = syn::parse_file(&before) else {
-            println!("skipped (failed to parse)");
-            continue;
-        };
-        visitor.visit_file(&ast);
-        match visitor.editor.is_empty() {
-            true => println!("no edits."),
-            false => {
-                let after = visitor.editor.finish();
-
-                println!("edits to apply!");
-                print_diff(&before, &after);
-
-                if dialoguer::Confirm::new()
-                    .with_prompt("save the edited file? ")
-                    .interact()?
-                {
-                    fs::write(path, after)?;
-                    count += 1
-                }
-            }
-        }
-    }
-    println!("edited {} files", count);
-    Ok(())
+    synsert::harness::run(
+        file,
+        |_, editor| Some(Visitor { editor }),
+        |Visitor { editor }| Some(editor),
+    )
 }
 
 struct Visitor {

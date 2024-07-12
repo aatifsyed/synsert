@@ -270,6 +270,7 @@ pub mod harness {
         fmt, fs,
         io::{self, Write as _},
         path::Path,
+        process,
     };
     use syn::visit::Visit;
 
@@ -320,6 +321,25 @@ pub mod harness {
         }
 
         Ok(())
+    }
+
+    pub fn run<P, V>(
+        files: impl IntoIterator<Item = P>,
+        start: impl FnMut(&Path, Editor) -> Option<V>,
+        end: impl FnMut(V) -> Option<Editor>,
+    ) -> !
+    where
+        P: AsRef<Path>,
+        V: for<'ast> Visit<'ast>,
+    {
+        let term = Term::stdout();
+        match run_on(files, start, end, &term, true) {
+            Ok(report) => report.exit_on(&term),
+            Err(e) => {
+                let _ = writeln!(&term, "io error: {e}");
+                process::exit(1)
+            }
+        }
     }
 
     pub fn run_on<P, V>(
@@ -418,6 +438,24 @@ pub mod harness {
         pub failed: usize,
         pub files: usize,
         pub edits: usize,
+    }
+
+    impl Report {
+        pub fn exit_on(&self, term: &Term) -> ! {
+            let Self {
+                failed,
+                files,
+                edits,
+            } = self;
+            let _ = writeln!(term, "edited {} sites across {} files", edits, files);
+            match failed {
+                0 => process::exit(0),
+                n => {
+                    let _ = writeln!(term, "failed to edit {n} files");
+                    process::exit(1)
+                }
+            }
+        }
     }
 
     fn should_color(term: &Term) -> bool {

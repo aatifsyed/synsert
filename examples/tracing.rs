@@ -1,7 +1,4 @@
-mod common;
-
 use clap::Parser;
-use common::print_diff;
 use console::{Style, Term};
 use itertools::Itertools as _;
 use proc_macro2::Span;
@@ -17,6 +14,10 @@ use crate::{
     format_args::{FormatArgs, OwnedPiece, OwnedPosition},
     tracing_fields::{Field, FieldKey, Path, Sigil},
 };
+
+fn print_diff(old: &str, new: &str) {
+    synsert::harness::print_diff_on(&console::Term::stdout(), old, new).unwrap()
+}
 
 #[derive(clap::Parser)]
 struct Args {

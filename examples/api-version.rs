@@ -1,7 +1,5 @@
-mod common;
-
 use clap::Parser;
-use std::{collections::HashSet, error::Error, fs, path::PathBuf};
+use std::{collections::HashSet, fs, io, path::PathBuf};
 use syn::visit::Visit;
 use synsert::Editor;
 
@@ -13,16 +11,16 @@ struct Args {
     file: Vec<PathBuf>,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> io::Result<()> {
     let Args { file, v0, v1 } = Args::parse();
     let v0 = fs::read_to_string(v0)?;
     let v0 = &v0.lines().collect();
     let v1 = fs::read_to_string(v1)?;
     let v1 = &v1.lines().collect();
-    common::harness(
-        file.iter().map(PathBuf::as_path),
-        |editor| Visitor { editor, v0, v1 },
-        |Visitor { editor, .. }| editor,
+    synsert::harness::run(
+        file,
+        |_, editor| Some(Visitor { editor, v0, v1 }),
+        |Visitor { editor, .. }| Some(editor),
     )
 }
 
