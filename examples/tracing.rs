@@ -437,7 +437,7 @@ mod format_args {
 
     enum Arg {
         Positional(Expr),
-        Named(Ident, Token![=], Expr),
+        Named(Ident, #[allow(unused)] Token![=], Expr),
     }
     impl Parse for Arg {
         fn parse(input: ParseStream) -> syn::Result<Self> {
