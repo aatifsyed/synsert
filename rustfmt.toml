@@ -1,0 +1,1 @@
+ignore = ["rustc_lexer", "rustc_parse_format"]

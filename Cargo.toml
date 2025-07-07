@@ -8,7 +8,12 @@ repository = "https://github.com/aatifsyed/synsert"
 homepage = "https://crates.io/crates/synsert"
 documentation = "https://docs.rs/synsert"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["harness"]
+harness = ["dep:console", "dep:similar", "dep:dialoguer"]
+
+[workspace]
+members = ["rustc_lexer", "rustc_parse_format"]
 
 [dependencies]
 console = { version = "0.15.7", optional = true }
@@ -29,9 +34,6 @@ similar = { version = "2.2.1", features = [
 ], optional = true }
 dialoguer = { version = "0.11.0", default-features = false, optional = true }
 
-[features]
-harness = ["dep:console", "dep:similar", "dep:dialoguer"]
-
 [dev-dependencies]
 clap = { version = "4.4.6", features = ["derive"] }
 console = "0.15.7"
@@ -42,7 +44,6 @@ itertools = "0.12.1"
 pretty_assertions = "1.4.0"
 prettyplease = "0.2.17"
 quote = { version = "1.0.35", default-features = false }
-rustc_parse_format = { git = "https://github.com/rust-lang/rust", default-features = false }
 similar = { version = "2.2.1", features = ["text", "inline", "bytes"] }
 syn = { version = "2.0.37", default-features = false, features = [
     "full",
@@ -51,3 +52,4 @@ syn = { version = "2.0.37", default-features = false, features = [
     "clone-impls",
 ] }
 syn-miette = "0.3.0"
+rustc_parse_format = { path = "rustc_parse_format" }

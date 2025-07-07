@@ -103,7 +103,7 @@ impl<'ast> Visit<'ast> for Visitor {
             .pieces
             .iter()
             .filter_map(|it| match it {
-                OwnedPiece::String(s) => Some(s),
+                OwnedPiece::Lit(s) => Some(s),
                 OwnedPiece::NextArgument(_) => None,
             })
             .fold(String::new(), |mut acc, el| {
@@ -120,7 +120,7 @@ impl<'ast> Visit<'ast> for Visitor {
 
         let mut failed = vec![];
         for arg in body.pieces.iter().filter_map(|it| match it {
-            OwnedPiece::String(_) => None,
+            OwnedPiece::Lit(_) => None,
             OwnedPiece::NextArgument(it) => Some(&**it),
         }) {
             let sigil = match arg.format.ty.as_str() {
@@ -349,10 +349,9 @@ mod tracing_fields {
 
 mod format_args {
     use rustc_parse_format::{
-        Alignment, Argument, Count, DebugHex, FormatSpec, InnerSpan, ParseMode, Parser, Piece,
-        Position, Sign,
+        Alignment, Argument, Count, DebugHex, FormatSpec, ParseMode, Parser, Piece, Position, Sign,
     };
-    use std::collections::HashMap;
+    use std::{collections::HashMap, ops::Range};
     use syn::{
         parse::{Parse, ParseStream},
         Expr, Ident, LitStr, Token,
@@ -371,13 +370,13 @@ mod format_args {
         assert_eq!(
             FormatArgs {
                 pieces: vec![
-                    OwnedPiece::String(String::from("hello ")),
+                    OwnedPiece::Lit(String::from("hello ")),
                     OwnedPiece::NextArgument(Box::new(OwnedArgument {
                         position: OwnedPosition::ArgumentImplicitlyIs(0),
                         position_span: InnerSpan { start: 8, end: 8 },
                         format: OwnedFormatSpec::default(),
                     })),
-                    OwnedPiece::String(String::from("!")),
+                    OwnedPiece::Lit(String::from("!")),
                 ],
                 positional_args: vec![parse_quote!(42)],
                 named_args: HashMap::new()
@@ -454,7 +453,7 @@ mod format_args {
     #[derive(Clone, PartialEq, Debug)]
     pub enum OwnedPiece {
         /// A literal string which should directly be emitted
-        String(String),
+        Lit(String),
         /// This describes that formatting should process the next argument (as
         /// specified inside) for emission.
         NextArgument(Box<OwnedArgument>),
@@ -463,7 +462,7 @@ mod format_args {
     impl From<Piece<'_>> for OwnedPiece {
         fn from(value: Piece<'_>) -> Self {
             match value {
-                Piece::String(it) => Self::String(it.into()),
+                Piece::Lit(it) => Self::Lit(it.into()),
                 Piece::NextArgument(it) => Self::NextArgument(Box::new((*it).into())),
             }
         }
@@ -476,7 +475,7 @@ mod format_args {
         pub position: OwnedPosition,
         /// The span of the position indicator. Includes any whitespace in implicit
         /// positions (`{  }`).
-        pub position_span: InnerSpan,
+        pub position_span: Range<usize>,
         /// How to format the argument
         pub format: OwnedFormatSpec,
     }
@@ -523,7 +522,7 @@ mod format_args {
         /// Optionally specified character to fill alignment with.
         pub fill: Option<char>,
         /// Span of the optionally specified fill character.
-        pub fill_span: Option<InnerSpan>,
+        pub fill_span: Option<Range<usize>>,
         /// Optionally specified alignment.
         pub align: Alignment,
         /// The `+` or `-` flag.
@@ -537,17 +536,17 @@ mod format_args {
         /// The integer precision to use.
         pub precision: OwnedCount,
         /// The span of the precision formatting flag (for diagnostics).
-        pub precision_span: Option<InnerSpan>,
+        pub precision_span: Option<Range<usize>>,
         /// The string width requested for the resulting format.
         pub width: OwnedCount,
         /// The span of the width formatting flag (for diagnostics).
-        pub width_span: Option<InnerSpan>,
+        pub width_span: Option<Range<usize>>,
         /// The descriptor string representing the name of the format desired for
         /// this argument, this can be empty or any number of characters, although
         /// it is required to be one word.
         pub ty: String,
         /// The span of the descriptor string (for diagnostics).
-        pub ty_span: Option<InnerSpan>,
+        pub ty_span: Option<Range<usize>>,
     }
     impl From<FormatSpec<'_>> for OwnedFormatSpec {
         fn from(value: FormatSpec<'_>) -> Self {
@@ -610,9 +609,9 @@ mod format_args {
     #[allow(clippy::enum_variant_names)]
     pub enum OwnedCount {
         /// The count is specified explicitly.
-        CountIs(usize),
+        CountIs(u16),
         /// The count is specified by the argument with the given name.
-        CountIsName(String, InnerSpan),
+        CountIsName(String, Range<usize>),
         /// The count is specified by the argument at the given index.
         CountIsParam(usize),
         /// The count is specified by a star (like in `{:.*}`) that refers to the argument at the given index.
