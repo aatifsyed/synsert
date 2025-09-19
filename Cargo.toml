@@ -10,7 +10,13 @@ documentation = "https://docs.rs/synsert"
 
 [features]
 default = ["harness"]
-harness = ["dep:console", "dep:similar", "dep:dialoguer"]
+harness = [
+  "dep:console",
+  "dep:similar",
+  "dep:dialoguer",
+  "syn/visit",
+  "syn/full",
+]
 
 [workspace]
 members = ["rustc_lexer", "rustc_parse_format"]
